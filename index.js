@@ -4,7 +4,6 @@ const readline = require('readline');
 const { SigningCosmWasmClient } = require('@cosmjs/cosmwasm-stargate');
 const { GasPrice, coins } = require('@cosmjs/stargate');
 const { DirectSecp256k1HdWallet, DirectSecp256k1Wallet } = require('@cosmjs/proto-signing');
-const { Secp256k1 } = require('@cosmjs/crypto');
 
 const colors = {
   reset: "\x1b[0m",
@@ -37,7 +36,7 @@ const logger = {
 const RPC_URL = 'https://rpc.zigscan.net/';
 const API_URL = 'https://testnet-api.oroswap.org/api/';
 const EXPLORER_URL = 'https://zigscan.org/tx/';
-const GAS_PRICE = GasPrice.fromString('0.025uzig');
+const GAS_PRICE = GasPrice.fromString('0.002uzig'); 
 
 const ORO_ZIG_CONTRACT = 'zig15jqg0hmp9n06q0as7uk3x9xkwr9k3r7yh4ww2uc0hek8zlryrgmsamk4qg';
 
@@ -51,10 +50,9 @@ const DENOM_ZIG = 'uzig';
 
 const ORO_CONTRACT = 'zig10rfjm85jmzfhravjwpq3hcdz8ngxg7lxd0drkr';
 
-const LIQUIDITY_ORO_AMOUNT = 1; 
-const LIQUIDITY_ZIG_AMOUNT = 0.495169; 
-
-const BELIEF_PRICE_ORO_TO_ZIG = "1.982160555004955471"; 
+const LIQUIDITY_ORO_AMOUNT = 0.1; 
+const LIQUIDITY_ZIG_AMOUNT = 0.05; 
+const BELIEF_PRICE_ORO_TO_ZIG = "1.982160555004955471";
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -87,12 +85,10 @@ function isMnemonic(input) {
 async function getWallet(key) {
   try {
     if (isMnemonic(key)) {
-      const wallet = await DirectSecp256k1HdWallet.fromMnemonic(key, { prefix: 'zig' });
-      return wallet;
+      return await DirectSecp256k1HdWallet.fromMnemonic(key, { prefix: 'zig' });
     } else if (/^[0-9a-fA-F]{64}$/.test(key.trim())) {
       const privateKeyBytes = Buffer.from(key.trim(), 'hex');
-      const wallet = await DirectSecp256k1Wallet.fromKey(privateKeyBytes, 'zig');
-      return wallet;
+      return await DirectSecp256k1Wallet.fromKey(privateKeyBytes, 'zig');
     } else {
       throw new Error('Invalid input: neither a valid mnemonic nor a 64-character hex private key');
     }
@@ -106,9 +102,19 @@ async function getAccountAddress(wallet) {
   return account.address;
 }
 
-function getRandomSwapAmount() {
-  const min = 0.001;
-  const max = 0.002;
+async function getBalance(client, address, denom) {
+  try {
+    const balance = await client.getBalance(address, denom);
+    return parseFloat(balance.amount) / Math.pow(10, TOKEN_DECIMALS[denom] || 6);
+  } catch (error) {
+    logger.error(`Failed to get balance for ${denom}: ${error.message}`);
+    return 0;
+  }
+}
+
+function getRandomSwapAmount(maxBalance) {
+  const min = 0.0001; 
+  const max = Math.min(0.0005, maxBalance * 0.3); 
   return Math.random() * (max - min) + min;
 }
 
@@ -126,7 +132,6 @@ async function getPoolInfo(contractAddress) {
 function calculateBeliefPrice(poolInfo, fromDenom) {
   try {
     if (!poolInfo || !poolInfo.assets || poolInfo.assets.length !== 2) {
-      
       return fromDenom === DENOM_ZIG ? "0.5" : BELIEF_PRICE_ORO_TO_ZIG;
     }
 
@@ -162,11 +167,9 @@ function calculateBeliefPrice(poolInfo, fromDenom) {
 
     let beliefPrice;
     if (fromDenom === DENOM_ZIG) {
-      
       const rawPrice = oroAmount / zigAmount;
-      beliefPrice = (rawPrice * 0.90).toFixed(18); 
+      beliefPrice = (rawPrice * 0.90).toFixed(18);
     } else {
-      
       beliefPrice = BELIEF_PRICE_ORO_TO_ZIG;
     }
 
@@ -177,61 +180,83 @@ function calculateBeliefPrice(poolInfo, fromDenom) {
   }
 }
 
-async function performSwap(wallet, address, amount, fromDenom, swapNumber) {
-  try {
-    const client = await SigningCosmWasmClient.connectWithSigner(RPC_URL, wallet, { gasPrice: GAS_PRICE });
-    const microAmount = toMicroUnits(amount, fromDenom);
-    const fromSymbol = fromDenom === DENOM_ZIG ? 'ZIG' : 'ORO';
-    const toSymbol = fromDenom === DENOM_ZIG ? 'ORO' : 'ZIG';
+async function performSwap(wallet, address, amount, fromDenom, swapNumber, maxRetries = 3) {
+  let retries = 0;
+  while (retries < maxRetries) {
+    try {
+      const client = await SigningCosmWasmClient.connectWithSigner(RPC_URL, wallet, { gasPrice: GAS_PRICE });
+      const microAmount = toMicroUnits(amount, fromDenom);
+      const fromSymbol = fromDenom === DENOM_ZIG ? 'ZIG' : 'ORO';
+      const toSymbol = fromDenom === DENOM_ZIG ? 'ORO' : 'ZIG';
 
-    const poolInfo = await getPoolInfo(ORO_ZIG_CONTRACT);
-    const beliefPrice = calculateBeliefPrice(poolInfo, fromDenom);
+      const balance = await getBalance(client, address, fromDenom);
+      const minBalance = amount + (fromDenom === DENOM_ZIG ? 0.005 : 0); 
+      if (balance < minBalance) {
+        logger.error(`Insufficient ${fromSymbol} balance: ${balance} < ${minBalance} required`);
+        return null;
+      }
 
-    let msg, funds, contractAddr;
+      const poolInfo = await getPoolInfo(ORO_ZIG_CONTRACT);
+      const beliefPrice = calculateBeliefPrice(poolInfo, fromDenom);
 
-    if (fromDenom === DENOM_ZIG) {
-      
-      msg = {
-        swap: {
-          belief_price: beliefPrice,
-          max_spread: "0.1", 
-          offer_asset: {
-            amount: microAmount.toString(),
-            info: { native_token: { denom: fromDenom } },
+      let msg, funds, contractAddr;
+
+      if (fromDenom === DENOM_ZIG) {
+        msg = {
+          swap: {
+            belief_price: beliefPrice,
+            max_spread: "0.3",
+            offer_asset: {
+              amount: microAmount.toString(),
+              info: { native_token: { denom: fromDenom } },
+            },
           },
-        },
-      };
-      funds = coins(microAmount, fromDenom);
-      contractAddr = ORO_ZIG_CONTRACT;
-    } else {
-      
-      msg = {
-        swap: {
-          belief_price: beliefPrice,
-          max_spread: "0.1", 
-          offer_asset: {
-            amount: microAmount.toString(),
-            info: { native_token: { denom: fromDenom } },
+        };
+        funds = coins(microAmount, fromDenom);
+        contractAddr = ORO_ZIG_CONTRACT;
+      } else {
+        msg = {
+          swap: {
+            belief_price: beliefPrice,
+            max_spread: "0.3",
+            offer_asset: {
+              amount: microAmount.toString(),
+              info: { native_token: { denom: fromDenom } },
+            },
           },
-        },
-      };
-      funds = coins(microAmount, fromDenom);
-      contractAddr = ORO_ZIG_CONTRACT;
+        };
+        funds = coins(microAmount, fromDenom);
+        contractAddr = ORO_ZIG_CONTRACT;
+      }
+
+      logger.loading(`Swap ${swapNumber}/10: ${amount.toFixed(5)} ${fromSymbol} -> ${toSymbol} (Attempt ${retries + 1}/${maxRetries})`);
+      const result = await client.execute(address, contractAddr, msg, 'auto', 'Swap', funds);
+      logger.success(`Swap ${swapNumber} completed! Tx: ${EXPLORER_URL}${result.transactionHash}`);
+      return result;
+    } catch (error) {
+      retries++;
+      logger.error(`Swap ${swapNumber} failed (Attempt ${retries}/${maxRetries}): ${error.message}`);
+      if (retries === maxRetries) {
+        logger.error(`Swap ${swapNumber} failed after ${maxRetries} retries. Skipping.`);
+        return null;
+      }
+      await new Promise(resolve => setTimeout(resolve, 2000));
     }
-
-    logger.loading(`Swap ${swapNumber}/10: ${amount.toFixed(5)} ${fromSymbol} -> ${toSymbol}`);
-    const result = await client.execute(address, contractAddr, msg, 'auto', 'Swap', funds);
-    logger.success(`Swap ${swapNumber} completed! Tx: ${EXPLORER_URL}${result.transactionHash}`);
-    return result;
-  } catch (error) {
-    logger.error(`Swap ${swapNumber} failed: ${error.message}`);
-    return null;
   }
+  return null;
 }
 
 async function addLiquidity(wallet, address) {
   try {
     const client = await SigningCosmWasmClient.connectWithSigner(RPC_URL, wallet, { gasPrice: GAS_PRICE });
+
+    const oroBalance = await getBalance(client, address, DENOM_ORO);
+    const zigBalance = await getBalance(client, address, DENOM_ZIG);
+    if (oroBalance < LIQUIDITY_ORO_AMOUNT || zigBalance < LIQUIDITY_ZIG_AMOUNT) {
+      logger.error(`Insufficient funds for liquidity: ${oroBalance} ORO, ${zigBalance} ZIG available`);
+      return null;
+    }
+
     const microAmountORO = toMicroUnits(LIQUIDITY_ORO_AMOUNT, DENOM_ORO);
     const microAmountZIG = toMicroUnits(LIQUIDITY_ZIG_AMOUNT, DENOM_ZIG);
 
@@ -344,10 +369,9 @@ function displayCountdown(hours, minutes, seconds) {
 }
 
 async function startDailyCountdown(keys, numTransactions) {
-  const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000; 
+  const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
 
   while (true) {
-
     const startTime = Date.now();
     const endTime = startTime + TWENTY_FOUR_HOURS;
 
@@ -358,13 +382,11 @@ async function startDailyCountdown(keys, numTransactions) {
       const seconds = Math.floor((remaining % (1000 * 60)) / 1000);
 
       displayCountdown(hours, minutes, seconds);
-
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
     console.log('\n');
     logger.success('⏰ 24 hours completed! Starting new transaction cycle...\n');
-
     await executeAllWallets(keys, numTransactions);
   }
 }
@@ -387,11 +409,9 @@ async function executeAllWallets(keys, numTransactions) {
       }
 
       logger.success(`All ${numTransactions} transaction cycles completed for wallet ${walletIndex + 1}!`);
-
       if (walletIndex < keys.length - 1) {
         console.log();
       }
-
     } catch (error) {
       logger.error(`Error processing wallet ${walletIndex + 1}: ${error.message}`);
     }
@@ -401,47 +421,51 @@ async function executeAllWallets(keys, numTransactions) {
 async function executeTransactionCycle(wallet, address, cycleNumber, walletNumber) {
   logger.step(`--- Transaction For Wallet ${walletNumber} (Cycle ${cycleNumber}) ---`);
 
+  const client = await SigningCosmWasmClient.connectWithSigner(RPC_URL, wallet, { gasPrice: GAS_PRICE });
+
+  const zigBalance = await getBalance(client, address, DENOM_ZIG);
+  const oroBalance = await getBalance(client, address, DENOM_ORO);
+  logger.info(`Initial balances: ${zigBalance} ZIG, ${oroBalance} ORO`);
+
+  let successfulSwaps = 0;
   for (let i = 1; i <= 10; i++) {
-    const swapAmount = getRandomSwapAmount();
     const fromDenom = i % 2 === 1 ? DENOM_ORO : DENOM_ZIG;
+    const balance = await getBalance(client, address, fromDenom);
+    if (balance < 0.0005) {
+      logger.warn(`Skipping swap ${i}/10: Insufficient ${fromDenom === DENOM_ZIG ? 'ZIG' : 'ORO'} balance (${balance})`);
+      continue;
+    }
+    const swapAmount = getRandomSwapAmount(balance);
 
-    await performSwap(wallet, address, swapAmount, fromDenom);
-
+    const result = await performSwap(wallet, address, swapAmount, fromDenom, i);
+    if (result) {
+      successfulSwaps++;
+    } else {
+      logger.warn(`Swap ${i}/10 failed, proceeding to next swap.`);
+    }
     await new Promise(resolve => setTimeout(resolve, 1000));
   }
 
-  await addLiquidity(wallet, address);
-
-  await new Promise(resolve => setTimeout(resolve, 2000));
-
-  await withdrawLiquidity(wallet, address);
-
-  const points = await getNewPromise(resolve => setTimeout(resolve, 1000));
-}
-
-async function executeTransactionCycle(wallet, address, cycleNumber, walletNumber) {
-  logger.step(`--- Transaction For Wallet ${walletNumber} (Cycle ${cycleNumber}) ---`);
-
-  for (let i = 1; i <= 10; i++) {
-    const swapAmount = getRandomSwapAmount();
-    const fromDenom = i % 2 === 1 ? DENOM_ORO : DENOM_ZIG;
-
-    await performSwap(wallet, address, swapAmount, fromDenom, i);
-
-    await new Promise(resolve => setTimeout(resolve, 1000));
+  const liquidityResult = await addLiquidity(wallet, address);
+  if (!liquidityResult) {
+    logger.warn('Liquidity addition failed, proceeding to withdrawal.');
   }
 
-  await addLiquidity(wallet, address);
-
   await new Promise(resolve => setTimeout(resolve, 2000));
 
-  await withdrawLiquidity(wallet, address);
+  const withdrawResult = await withdrawLiquidity(wallet, address);
+  if (!withdrawResult) {
+    logger.warn('Liquidity withdrawal failed, proceeding to points check.');
+  }
 
   const points = await getPoints(address);
   if (points) {
     logger.info(`Points: ${points.points} (Swaps: ${points.swaps_count}, Pools: ${points.join_pool_count})`);
+  } else {
+    logger.warn('Failed to retrieve points.');
   }
 
+  logger.info(`Cycle ${cycleNumber} completed with ${successfulSwaps}/10 successful swaps.`);
   console.log();
 }
 
@@ -453,7 +477,7 @@ async function main() {
     .map((key) => process.env[key]);
 
   if (keys.length === 0) {
-    logger.error('No private keys orMnemonic found in .env file');
+    logger.error('No private keys or mnemonic found in .env file');
     rl.close();
     return;
   }
@@ -469,10 +493,7 @@ async function main() {
   }
 
   console.log();
-
   await executeAllWallets(keys, numTransactions);
-
-
   await startDailyCountdown(keys, numTransactions);
 }
 
