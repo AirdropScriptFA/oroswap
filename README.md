@@ -21,8 +21,8 @@ Automated trading bot for OroSwap DEX on Zig Network. This bot performs automate
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/vikitoshi/Oroswap-Auto-Bot.git
-   cd Oroswap-Auto-Bot
+   git clone https://github.com/AirdropScriptFA/oroswap.git
+   cd oroswap
    ```
 
 2. **Install dependencies**
@@ -164,6 +164,8 @@ Join our Telegram channel for updates, support, and discussions:
 
 **📢 [Join Airdrop Insider ID](https://t.me/AirdropInsiderID)**
 
+
+**📢 [Join Airdrop Script FA](https://t.me/AirdropScriptFA)**
 Get the latest updates on:
 - Bot improvements and new features
 - Airdrop opportunities and strategies
@@ -185,7 +187,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 🔄 Updates
 
 - **v1.0.0**: Initial release with basic swapping and liquidity features
-- Check [Releases](https://github.com/vikitoshi/Oroswap-Auto-Bot/releases) for latest updates
+
 
 ## 💡 Contributing
 
@@ -201,12 +203,10 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 If you need help or have questions:
 
-1. Check the [Issues](https://github.com/vikitoshi/Oroswap-Auto-Bot/issues) page
-2. Join our [Telegram channel](https://t.me/AirdropInsiderID)
-3. Create a new issue if you found a bug
-
 ---
 
 **⭐ If this bot helps you, please give it a star on GitHub!**
 
 Made with ❤️ by [Airdrop Insider ID](https://t.me/AirdropInsiderID)
+
+**THANK YOU**
